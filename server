@@ -1,0 +1,259 @@
+.intel_syntax noprefix
+.global _start
+
+.section .bss
+sock_fd: .skip 8
+client_fd: .skip 8
+client_addr: .skip 16
+client_addr_len: .skip 4
+read_request_result_bytes: .skip 1024
+read_request_count: .skip 100
+read_request: .skip 1024
+response_r: .skip 1024
+write_size: .skip 8
+open_path: .skip 1024
+write_file: .skip 1024
+write_file_count: .skip 1024
+write_file_result: .skip 1024
+openfile_fd: .skip 20
+read_file: .skip 1024
+read_file_count: .skip 100
+read_file_result: .skip 1024
+fork_result: .skip 8
+recvmsg_out: .skip 8
+
+msghdr: .skip 1024
+msg_name: .skip 100
+msg_namelen: .skip 8
+msg_iov: .skip 8
+msg_iovlen: .skip 8
+msg_controllen: .skip 8
+msg_flags: .skip 4
+body_buffer: .skip 1024
+body_length: .skip 1024
+
+
+
+.section .data
+
+
+sockaddr_in:
+	.short 2
+	.short 0x5000
+	.int 0
+	.skip 8
+
+
+response:
+    .ascii "HTTP/1.0 200 OK\r\n\r\n"
+
+post_str:
+    .ascii "POST"
+	
+
+.section .text
+_start:
+
+    # Create socket
+    mov rax, 41
+    mov rdi, 2
+    mov rsi, 1
+    mov rdx, 0
+    syscall
+    mov [sock_fd], rax
+	
+    # Bind socket
+	mov rax, 49
+	mov rdi, [sock_fd]
+	lea rsi, [sockaddr_in]
+	mov rdx, 16
+	syscall
+
+listen:
+    #Listen socket
+    mov rax, 50
+    mov rdi, [sock_fd]
+    mov rsi, 0
+    syscall
+
+accept:
+    mov rax, 43
+    mov rdi, [sock_fd]
+    mov rsi, 0
+    mov rdx, 0x0
+    syscall
+    mov [client_fd], rax
+
+    #fork
+    mov rax, 57
+    syscall
+    mov [fork_result], rax
+    cmp qword ptr [fork_result], 0
+    je child
+    jmp close_parent
+
+child:
+    #close() 
+    mov rax, 3
+    mov rdi, [sock_fd]
+    syscall
+    
+
+    #recvmsg(3, NULL, 0)
+    #mov rax, 47
+    #mov rdi, [client_fd]
+    #lea rsi, [msghdr]
+    #mov rdx, 0
+    #syscall
+    #mov [recvmsg_out], rax
+
+    # read(4, <read_request>, <read_request_count>) = <read_request_result>
+    mov rax, 0
+    mov rdi, [client_fd]
+    lea rsi, [read_request]
+    mov rdx, 1024
+    syscall
+    mov [read_request_result_bytes], rax
+
+    mov rax, 1                
+    mov rdi, 1                
+    lea rsi, [read_request]   
+    mov rdx, [read_request_result_bytes] 
+    syscall                   
+
+    #if post jump
+    lea rsi, [read_request]
+    lea rdi, [post_str]
+    mov rcx, 4
+    repe cmpsb
+    je post
+
+
+
+get:
+    #get_thepath
+    lea rsi, [read_request + 4]
+    lea rdi, [open_path]
+    mov rcx, 16
+    rep movsb
+
+    #open("<open_path>", O_RDONLY) = 3
+    mov rax, 2
+    lea rdi, [open_path]
+    mov rsi, 0
+    syscall
+    mov [openfile_fd], rax
+
+    #read(3, <read_file>, <read_file_count>) = <read_file_result>
+    mov rax, 0
+    mov rdi, [openfile_fd]
+    lea rsi, [read_file]
+    mov rdx, 1024
+    syscall
+    mov [read_file_result], rax
+
+    #close()
+    mov rax, 3
+    mov rdi, [openfile_fd]
+    syscall
+
+    #write(4, "HTTP/1.0 200 OK\r\n\r\n", 19) = 19
+    mov rax, 1
+    mov rdi, [client_fd]
+    lea rsi, [response]
+    mov rdx, 19
+    syscall
+    mov [write_file_result], rax
+    
+    #write(4, <write_file>, <write_file_count>) = <write_file_result>
+    mov rax, 1
+    mov rdi, [client_fd]
+    lea rsi, [read_file]
+    mov rdx, [read_file_result]
+    syscall
+    mov [write_file_result], rax
+
+    jmp get_exit
+
+
+
+
+post: 
+    #get_thepath
+    lea rsi, [read_request + 5]
+    lea rdi, [open_path]
+    mov rcx, 16
+    rep movsb
+
+    #getthebody
+    mov r10, 182
+    cmp byte ptr [read_request + r10], 0x0A
+    je add_1
+    jmp continue
+
+add_1:
+    add r10, 1
+
+continue:
+    lea rsi, [read_request + r10]
+    lea rdi, [body_buffer]
+    mov r9, [read_request_result_bytes]
+    sub r9, r10
+    mov rcx, r9
+    rep movsb
+
+    #open("<open_path>", O_WRONLY|O_CREAT, 0777) = 3
+    mov rax, 2
+    lea rdi, [open_path]
+    mov rsi, 65
+    mov rdx, 0x1ff
+    syscall
+    mov [openfile_fd], rax
+
+    #write(3, <write_file>, <write_file_count>) = <write_file_result>
+    mov rax, 1
+    mov rdi, [openfile_fd]
+    lea rsi, [body_buffer]
+    mov rdx, r9
+    syscall
+    mov [write_file_result], rax
+
+    #close()
+    mov rax, 3
+    mov rdi, [openfile_fd]
+    syscall
+
+    #write(4, "HTTP/1.0 200 OK\r\n\r\n", 19) = 19
+    mov rax, 1
+    mov rdi, [client_fd]
+    lea rsi, [response]
+    mov rdx, 19
+    syscall
+    mov [response_r], rax
+    jmp exit
+
+
+close_parent:
+
+    #close()
+    mov rax, 3
+    mov rdi, [client_fd]
+    syscall
+
+    jmp accept
+
+get_exit:
+
+    #close()
+    mov rax, 3
+    mov rdi, [client_fd]
+    syscall
+
+exit:
+
+    # SYS CALL EXIT
+    mov rax, 60
+    xor rdi, rdi    
+    syscall
+
+.section .data
